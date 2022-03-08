@@ -6,7 +6,7 @@
 
 //Distance sensor
 #define TRIGGER_PIN  9 // Arduino pin tied to trigger pin on the ultrasonic sensor.
-#define ECHO_PIN     A0 // Arduino pin tied to echo pin on the ultrasonic sensor.
+#define ECHO_PIN     7 // Arduino pin tied to echo pin on the ultrasonic sensor.
 #define MAX_DISTANCE 100 // Maximum distance we want to ping for (in centimeters).
 
 NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE);
@@ -26,14 +26,13 @@ const int rs = 12, en = 11, d4 = 5, d5 = 4, d6 = 6, d7 = 2;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
 // constants won't change.
+const int magneticSensor = A0;   // the number of the magnetic sensor pin
 const int LDR = A1;             // the pin for light sensor
 const int motionSensor = A2;    // the number of the motion sensor pin
 const int buttonsPin = A4;      // the number of the pushbutton pin
 const int greenLedPin = A5;     // the number of the green LED pin -- spraying
 const int freshner = 3;         // the number of the freshner pin
 const int redLedPin = 13;       // the number of the red LED pin -- system on
-const int magneticSensor = 8;   // the number of the magnetic sensor pin
-int state_magnetic;             // 0 close - 1 open wwitch
 
 //EEPROM cannot hold a value bigger then 255 in one byte so we will need two bytes in order to perform this;
 const int addressFirst2 = 0;       // memory address for the number of sprays
@@ -43,6 +42,7 @@ const int addressLast2 = 1;        // memory address for the number of sprays
 const int addressDelay = 2;        // memory address for delay variable
 
 // variables will change:
+int state_magnetic;             // 0 close - 1 open switch
 int buttonState = 0;         // variable for reading the pushbutton status
 int valueFirst2;
 int valueLast2;
@@ -58,7 +58,7 @@ int betweenSpraysInterval = 30000;
 
 //debouncing
 int lastButtonState;
-unsigned long debounceDelay = 100;
+unsigned long debounceDelay = 50;
 unsigned long lastDebounceTimeButton = 0;
 
 // in order to delay the spray have to keep track of the time the action to spray was initiated and if it has been sprayed or not
@@ -90,17 +90,19 @@ int menuInterval = 5000;
 
 //variables required for in use checking and calculating the spray state
 const unsigned long nr2Time = 100000;
-const int nr1Time = 40000;
+const unsigned long nr1Time = 40000;
 const int distanceIntervalMin = 0;
 const int distanceIntervalMax = 40; 
 bool inInterval = false;
 //in order to detect the use of the toilet we check if the distance for the last 10 sensor data recieved are in the interval of distances in which the toilet might be in use
 int distancesArray[10];
 int distArrLength = 10;
-int inUseStart = -1;
-int inUseEnd = -1;
-int previnUseStart = -1;
-int previnUseEnd = -1;
+bool countingUseTime = false;
+bool endSet = false;
+unsigned long  inUseStart = -1;
+unsigned long  inUseEnd = -1;
+unsigned long previnUseStart = -1;
+unsigned long previnUseEnd = -1;
 int useState = 0; //can be // -- 0 for not in use // -- 1 for number 1// --2 for number 2// -- (-1) for unknown // -- 3 for cleaning 
 
 void addDistanceToArray(){
@@ -113,18 +115,24 @@ void addDistanceToArray(){
     }
   }
   distancesArray[i] = distance;
-  if(!(distancesArray[i] >= distanceIntervalMin) || !(distancesArray[i] <= distanceIntervalMax)){
+  if(useState == 3 || !(distancesArray[i] >= distanceIntervalMin) || !(distancesArray[i] <= distanceIntervalMax)){
     inInterval = false;
   }
 }
 
 void inUse(){
   if(inInterval){
-    useState = -1;
-    inUseStart = millis();
+    if(!countingUseTime){
+      useState = -1;
+      countingUseTime = true;
+      inUseStart = millis();
+      Serial.println(inUseStart);
+    }
   } else {
-    if(inUseStart != -1){
+    if(inUseStart != -1 && countingUseTime){
       inUseEnd = millis();
+      Serial.println(inUseEnd);
+      countingUseTime = false;
     }
   }
 }
@@ -195,6 +203,8 @@ void displayTemperature(){
   tempCString.remove(length-1);
   if (tempC != DEVICE_DISCONNECTED_C) {
     lcd.print(tempCString + " C");
+  } else {
+    Serial.println("not Connected temp");
   }
 }
 
@@ -357,9 +367,9 @@ void getFlushState(){
 bool buttonStateChanged(){
   if(lastButtonState > 900 && buttonState > 900){
     return false;
-  } else if((lastButtonState > 300 && lastButtonState < 900) && (buttonState > 300 && buttonState < 900)){
+  } else if((lastButtonState > 350 && lastButtonState < 900) && (buttonState > 350 && buttonState < 900)){
     return false;
-  } else if((lastButtonState > 50 && lastButtonState < 300) && (buttonState > 50 && buttonState < 300)){
+  } else if((lastButtonState > 50 && lastButtonState < 350) && (buttonState > 50 && buttonState < 540)){
     return false;
   }
   return true;
@@ -369,15 +379,17 @@ bool buttonStateChanged(){
 void calculateNumberOfSprays(){
   if(state_magnetic == HIGH){
     if(inUseEnd != -1 && inUseStart != -1 && inUseEnd > inUseStart && previnUseEnd != inUseEnd && previnUseStart != inUseStart){
-      int timeOnToilet = inUseEnd - inUseStart;
+      unsigned long timeOnToilet = inUseEnd - inUseStart;
       previnUseStart = inUseStart;
       previnUseEnd = inUseEnd;
+       Serial.println(String(inUseEnd) + " - " + String(inUseStart));
+      Serial.println("TimeOnToilet:" + String(timeOnToilet));
       if(timeOnToilet > nr2Time){
         useState = 2;
-        numberOfSprays += 2;
+        increaseNumberOfSprays(2);
       } else if(timeOnToilet > nr1Time && timeOnToilet < nr2Time){
         useState = 1;
-        numberOfSprays++;
+        increaseNumberOfSprays(1);
       } else {
         useState = 3;
       }
@@ -385,12 +397,16 @@ void calculateNumberOfSprays(){
       useState = 3;
     }
   } else {
+    if(inInterval){
+      useState = -1;
+    } else {
     useState = 0;
+    }
   }
 }
 
 void checkPossibleSpray(){
-  if(numberOfSprays && millis()-lastSprayTime >= betweenSpraysInterval){
+  if(numberOfSprays && (millis()-lastSprayTime >= betweenSpraysInterval || lastSprayTime == 0)){
     numberOfSprays--;
     spray();
     lastSprayTime = millis();
@@ -417,13 +433,19 @@ void delaySpray(){
   }
 }
 
+void increaseNumberOfSprays(int amount){
+  Serial.println("to increase");
+  if((millis()-lastSprayTime >= betweenSpraysInterval && numberOfSprays == 0) || lastSprayTime == 0){
+    numberOfSprays += amount;
+    Serial.println(numberOfSprays);
+  }
+}
+
 void changeGreenLedState(){
     greenLEDState = !greenLEDState;
 }
 
 void loop() { 
-  //check if toilet is in use
-  inUse();
   //checks if there is a spray required and performs the action
   checkPossibleSpray();
   //chaning greenLedState based on the interrupt
@@ -450,11 +472,12 @@ void loop() {
       addDistanceToArray();
       getMotion();
       calculateNumberOfSprays();
+      //check if toilet is in use
+      inUse();
       Serial.println(String(useState) + '\n' + "DISTANCE: " + String(distance));
     }
     previousMillisSensors = currentMillis; 
   }
-
 
   //Menu And Button Spray
   currentMillis = millis();
@@ -475,7 +498,7 @@ void loop() {
         }
       }
       previousMillisMenu = currentMillis;
-    } else if(buttonState > 300){ // middle button press
+    } else if(buttonState > 350){ // middle button press
       if(menuState){
         if(selectedOption == -1){
           selectedOption = currentOption;
@@ -495,7 +518,7 @@ void loop() {
       previousMillisMenu = currentMillis;
     } else if(buttonState > 50){ // left most button press
         if(!menuState){
-          numberOfSprays++;
+          increaseNumberOfSprays(1);
         } else {
             if(selectedOption != -1){
               decreaseOptionValue();
